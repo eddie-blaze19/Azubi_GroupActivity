@@ -1,0 +1,9 @@
+﻿scanner:
+  rules:
+    - category: security
+      severity: HIGH
+    - category: cost-optimization
+      severity: MEDIUM
+  output:
+    format: json
+    include-passed: false
