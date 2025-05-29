@@ -1,0 +1,44 @@
+# buildspec.yml
+version: 0.2
+
+phases:
+  install:
+    runtime-versions:
+      python: 3.9
+    commands:
+      - echo Installing Conformity Template Scanner
+      - pip install cloudone-template-scanner
+      
+  pre_build:
+    commands:
+      - echo Validating CloudFormation template syntax
+      - aws cloudformation validate-template --template-body file://template.yaml
+      
+  build:
+    commands:
+      - echo Running Conformity Template Scanner
+      - template-scanner --template template.yaml --output-format json --output-file conformity-results.json
+      - echo Conformity scan completed
+      
+  post_build:
+    commands:
+      - echo Reviewing scan results
+      - cat conformity-results.json
+      - python -c "
+        import json
+        with open('conformity-results.json', 'r') as f:
+            results = json.load(f)
+        violations = results.get('violations', [])
+        high_severity = [v for v in violations if v.get('severity') == 'HIGH']
+        if high_severity:
+            print(f'Found {len(high_severity)} high severity violations')
+            exit(1)
+        else:
+            print('No high severity violations found')
+        "
+
+artifacts:
+  files:
+    - template.yaml
+    - conformity-results.json
+  name: ConformityScannedTemplate
