@@ -1,0 +1,185 @@
+name: Terraform CI/CD with Conformity Scanner
+
+on:
+  push:
+    branches: [ main, develop ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  TF_VERSION: '1.6.0'
+  AWS_REGION: 'us-east-1'
+
+jobs:
+  terraform-validate:
+    name: Terraform Validate
+    runs-on: ubuntu-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+    
+    - name: Terraform Format Check
+      run: terraform fmt -check -recursive
+      working-directory: terraform/
+    
+    - name: Terraform Init
+      run: terraform init
+      working-directory: terraform/
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    
+    - name: Terraform Validate
+      run: terraform validate
+      working-directory: terraform/
+
+  conformity-scan:
+    name: Cloud One Conformity Template Scanner
+    runs-on: ubuntu-latest
+    needs: terraform-validate
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+    
+    - name: Terraform Init
+      run: terraform init
+      working-directory: terraform/
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    
+    - name: Generate Terraform Plan
+      run: |
+        terraform plan -out=tfplan
+        terraform show -json tfplan > tfplan.json
+      working-directory: terraform/
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    
+    - name: Run Conformity Template Scanner
+      id: conformity-scan
+      run: |
+        curl -X POST \
+          https://${{ secrets.CONFORMITY_REGION }}-api.cloudconformity.com/v1/template-scanner/scan \
+          -H "Authorization: ApiKey ${{ secrets.CONFORMITY_API_KEY }}" \
+          -H "Content-Type: application/vnd.api+json" \
+          -d '{
+            "data": {
+              "type": "template-scanner",
+              "attributes": {
+                "type": "terraform-plan",
+                "contents": "'$(base64 -w0 terraform/tfplan.json)'"
+              }
+            }
+          }' > conformity-results.json
+        
+        # Check if scan was successful
+        if jq -e '.data.attributes.status == "SUCCESS"' conformity-results.json > /dev/null; then
+          echo "Conformity scan completed successfully"
+          echo "scan_status=success" >> $GITHUB_OUTPUT
+        else
+          echo "Conformity scan failed"
+          echo "scan_status=failed" >> $GITHUB_OUTPUT
+          exit 1
+        fi
+    
+    - name: Parse Conformity Results
+      run: |
+        echo "## Conformity Scan Results" >> $GITHUB_STEP_SUMMARY
+        
+        # Extract violations
+        VIOLATIONS=$(jq -r '.data.attributes.contents.violations // [] | length' conformity-results.json)
+        echo "Total violations found: $VIOLATIONS" >> $GITHUB_STEP_SUMMARY
+        
+        # Show high and critical violations
+        jq -r '
+          .data.attributes.contents.violations[]? |
+          select(.riskLevel == "HIGH" or .riskLevel == "CRITICAL") |
+          "- **\(.riskLevel)**: \(.message) (Rule: \(.ruleId))"
+        ' conformity-results.json >> $GITHUB_STEP_SUMMARY || echo "No high/critical violations found" >> $GITHUB_STEP_SUMMARY
+    
+    - name: Upload Conformity Results
+      uses: actions/upload-artifact@v4
+      with:
+        name: conformity-scan-results
+        path: conformity-results.json
+    
+    - name: Fail on Critical Issues
+      run: |
+        CRITICAL_COUNT=$(jq -r '[.data.attributes.contents.violations[]? | select(.riskLevel == "CRITICAL")] | length' conformity-results.json)
+        if [ "$CRITICAL_COUNT" -gt 0 ]; then
+          echo "Found $CRITICAL_COUNT critical security issues. Failing the build."
+          exit 1
+        fi
+
+  terraform-plan:
+    name: Terraform Plan
+    runs-on: ubuntu-latest
+    needs: [terraform-validate, conformity-scan]
+    if: github.event_name == 'pull_request'
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+    
+    - name: Terraform Init
+      run: terraform init
+      working-directory: terraform/
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    
+    - name: Terraform Plan
+      run: terraform plan -no-color
+      working-directory: terraform/
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+
+  terraform-apply:
+    name: Terraform Apply
+    runs-on: ubuntu-latest
+    needs: [terraform-validate, conformity-scan]
+    if: github.ref == 'refs/heads/main' && github.event_name == 'push'
+    environment: production
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+    
+    - name: Setup Terraform
+      uses: hashicorp/setup-terraform@v3
+      with:
+        terraform_version: ${{ env.TF_VERSION }}
+    
+    - name: Terraform Init
+      run: terraform init
+      working-directory: terraform/
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+    
+    - name: Terraform Apply
+      run: terraform apply -auto-approve
+      working-directory: terraform/
+      env:
+        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}

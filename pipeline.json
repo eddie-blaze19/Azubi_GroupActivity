@@ -1,0 +1,90 @@
+{
+  "pipeline": {
+    "name": "ConformitySecurityPipeline",
+    "roleArn": "arn:aws:iam::604241263439:role/CodePipelineServiceRole",
+    "artifactStore": {
+      "type": "S3",
+      "location": "s3://hotpotbucket/Blaze/"
+    },
+    "stages": [
+      {
+        "name": "Source",
+        "actions": [
+          {
+            "name": "SourceAction",
+            "actionTypeId": {
+              "category": "Source",
+              "owner": "AWS",
+              "provider": "CodeStarSourceConnection",
+              "version": "1"
+            },
+            "configuration": { 
+              "ConnectionArn": "arn:aws:codestar-connections:us-west-1:604241263439:connection/351ae885-546b-49b0-87f1-ab2331264f57",
+              "FullRepositoryId": "eddie-blaze19/Azubi_GroupActivity",
+              "BranchName": "main",
+              "OutputArtifactFormat": "CODE_ZIP"
+            },
+            "outputArtifacts": [
+              {
+                "name": "SourceOutput"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "SecurityScan",
+        "actions": [
+          {
+            "name": "ConformityScan",
+            "actionTypeId": {
+              "category": "Build",
+              "owner": "AWS",
+              "provider": "CodeBuild",
+              "version": "1"
+            },
+            "configuration": {
+              "ProjectName": "conformity-template-scanner"
+            },
+            "inputArtifacts": [
+              {
+                "name": "SourceOutput"
+              }
+            ],
+            "outputArtifacts": [
+              {
+                "name": "ScanOutput"
+              }
+            ]
+          }
+        ]
+      },
+      {
+        "name": "Deploy",
+        "actions": [
+          {
+            "name": "DeployCloudFormation",
+            "actionTypeId": {
+              "category": "Deploy",
+              "owner": "AWS",
+              "provider": "CloudFormation",
+              "version": "1"
+            },
+            "configuration": {
+              "ActionMode": "CREATE_UPDATE",
+              "StackName": "conformity-demo-stack",
+              "TemplatePath": "ScanOutput::template.yaml",
+              "Capabilities": "CAPABILITY_IAM",
+              "RoleArn": "arn:aws:iam::604241263439:role/CloudFormationRole"
+            },
+            "inputArtifacts": [
+              {
+                "name": "ScanOutput"
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+} 
