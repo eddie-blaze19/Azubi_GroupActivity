@@ -1,5 +1,5 @@
 output "s3_bucket_name" {
-  description = "Name of the S3 bucket"
+  description = "hotpotbucketV2"
   value       = aws_s3_bucket.example.bucket
 }
 
